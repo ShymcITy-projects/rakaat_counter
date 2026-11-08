@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
+<title>Rakaat</title>
+<style>
+  :root { --fg:#e8e8ea; --dim:#8a8a93; --acc:#4ade80; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { height:100%; margin:0; background:#000; color:var(--fg);
+    font:16px -apple-system, system-ui, sans-serif; }
+  body { padding: env(safe-area-inset-top) 14px env(safe-area-inset-bottom); }
+  button { background:#1b1b21; color:var(--fg); border:1px solid #33333c; border-radius:14px;
+           padding:16px 18px; font-size:18px; font-weight:600; }
+  button.primary { background:var(--acc); color:#04230f; border-color:var(--acc); }
+  .screen { display:none; flex-direction:column; align-items:center; gap:14px; padding-top:16px; }
+  body[data-mode="setup"] #setup,
+  body[data-mode="prep"] #prep { display:flex; }
+  #prayers { display:grid; grid-template-columns:1fr 1fr; gap:12px; width:100%; max-width:380px; }
+  #prayers button { padding:22px 8px; }
+  #prayers small { display:block; color:var(--dim); font-weight:400; font-size:13px; margin-top:4px; }
+  .msg { color:var(--dim); text-align:center; max-width:340px; line-height:1.4; min-height:44px; }
+  .count { font-size:90px; font-weight:200; min-height:100px; }
+
+  #stageWrap { width:100%; max-width:340px; margin:0 auto; position:relative;
+               background:#000; border-radius:12px; overflow:hidden; }
+  video, #overlay { display:block; width:100%; transform:scaleX(-1); }
+  #overlay { position:absolute; left:0; top:0; height:100%; }
+  /* camera must keep running, but is invisible outside prep */
+  body:not([data-mode="prep"]) #stageWrap { position:fixed; left:0; top:0; width:2px; height:2px;
+       opacity:0.01; pointer-events:none; z-index:-1; }
+
+  #run { position:fixed; inset:0; background:#000; z-index:10; display:none;
+         align-items:center; justify-content:center; user-select:none; -webkit-user-select:none;
+         -webkit-touch-callout:none; touch-action:manipulation; }
+  body[data-mode="run"] #run { display:flex; }
+  #num { font-size:min(72vh, 88vw); font-weight:200; line-height:1; color:#9a9aa5; }
+  #dot { position:fixed; top:calc(env(safe-area-inset-top) + 10px); right:10px; width:7px; height:7px;
+         border-radius:50%; background:#1f3d27; }
+  #dot.lost { background:#4a1f1f; }
+
+  body.debug[data-mode="run"] #run { bottom:auto; height:45vh; }
+  body.debug[data-mode="run"] #num { font-size:34vh; }
+  #dbg { display:none; position:fixed; left:0; right:0; bottom:0; height:55vh; z-index:11;
+         background:#0b0b0d; padding:8px 10px env(safe-area-inset-bottom); overflow:auto; }
+  body.debug[data-mode="run"] #dbg { display:block; }
+  canvas#plot { width:100%; height:110px; background:#111116; border-radius:8px; display:block; }
+  #log { font:11px ui-monospace, Menlo, monospace; color:#b9b9c2; white-space:pre-wrap; margin-top:6px; }
+  label.dbgtoggle { color:var(--dim); font-size:14px; display:flex; gap:8px; align-items:center; margin-top:18px; }
+  #setup h1 { font-size:15px; font-weight:500; color:var(--dim); margin:4px 0 0; }
+</style>
+</head>
+<body data-mode="setup">
+
+<div id="stageWrap">
+  <video id="video" playsinline muted></video>
+  <canvas id="overlay"></canvas>
+</div>
+
+<!-- 1. choose prayer -->
+<div id="setup" class="screen">
+  <h1>Choose the prayer</h1>
+  <div id="prayers">
+    <button data-n="2" data-name="FAJR">FAJR<small>2</small></button>
+    <button data-n="3" data-name="MAGHRIB">MAGHRIB<small>3</small></button>
+    <button data-n="4" data-name="DHUHR">DHUHR<small>4</small></button>
+    <button data-n="4" data-name="ASR">ASR<small>4</small></button>
+    <button data-n="4" data-name="ISHA">ISHA<small>4</small></button>
+  </div>
+  <div class="msg" id="setupMsg"></div>
+  <label class="dbgtoggle"><input type="checkbox" id="dbgChk"> debug view</label>
+</div>
+
+<!-- 2. position + calibrate -->
+<div id="prep" class="screen">
+  <div class="count" id="count"></div>
+  <div class="msg" id="prepMsg">Loading...</div>
+  <button class="primary" id="btnBegin" style="display:none">Begin</button>
+</div>
+
+<!-- 3. run -->
+<div id="run"><div id="num">1</div><div id="dot"></div></div>
+<div id="dbg">
+  <canvas id="plot" width="800" height="220"></canvas>
+  <button id="btnCsv" style="padding:8px 12px;font-size:13px;margin-top:6px">Save trace (CSV)</button>
+  <div id="log"></div>
+</div>
+
+<script type="module">
+import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const $ = id => document.getElementById(id);
+const video = $("video"), overlay = $("overlay"), octx = overlay.getContext("2d");
+const plot = $("plot"), pctx = plot.getContext("2d");
+
+// Detector settings (tuned on the first real 4-rakaat trace)
+const CFG = {
+  enter: 1.9,        // d above this = deep dip (sujood)
+  exit: 1.75,        // d below this (while tracked) = dip ended
+  lostTrig: 1.6,     // tracking lost right after d above this = still deep
+  minDeepS: 0.3,     // dip must last this long
+  lostGiveUpS: 8,    // lost this long = person probably left; stop assuming "deep"
+  standMed: 0.5,     // median d below this = standing
+  standHoldS: 1.5,   // must stay standing this long
+  histS: 0.6,        // window for the median
+  minGapS: 3         // minimum time between two increments
+};
+
+let mode = "setup";
+let landmarker = null, camReady = false, wakeLock = null, debug = false;
+let target = 4, rak = 1;
+let cal = null, calibrating = false, calSamples = [];
+let dSmooth = null;
+
+// detector state
+let deep = false, deepSince = null, lastD = 0, lostSince = null, hist = [];
+let evSinceInc = 0, standSince = null, lastInc = -1e9;
+const trace = [];
+
+function setMode(m) { mode = m; document.body.dataset.mode = m; }
+function log(msg) {
+  if (!debug) return;
+  const el = $("log"); const t = (performance.now() / 1000).toFixed(1);
+  el.textContent += `${t}s ${msg}\n`; $("dbg").scrollTop = $("dbg").scrollHeight;
+}
+function median(a) { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; }
+
+$("dbgChk").onchange = e => { debug = e.target.checked; document.body.classList.toggle("debug", debug); };
+
+// ---------- setup: choose prayer, start camera ----------
+document.querySelectorAll("#prayers button").forEach(b => {
+  b.onclick = async () => {
+    target = +b.dataset.n;
+    setMode("prep");
+    $("btnBegin").style.display = "none";
+    $("count").textContent = "";
+    if (camReady) { readyForBegin(); return; }
+    $("prepMsg").textContent = "Starting camera...";
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+      video.srcObject = stream; await video.play();
+      overlay.width = video.videoWidth; overlay.height = video.videoHeight;
+      $("prepMsg").textContent = "Loading the pose model (internet needed this once)...";
+      const fileset = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+      landmarker = await PoseLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+          delegate: "GPU" },
+        runningMode: "VIDEO", numPoses: 1,
+        minPoseDetectionConfidence: 0.4, minPosePresenceConfidence: 0.4, minTrackingConfidence: 0.4 });
+      camReady = true;
+      requestAnimationFrame(loop);
+      readyForBegin();
+    } catch (err) {
+      $("prepMsg").textContent = "Error: " + err.message;
+      $("btnBegin").textContent = "Back"; $("btnBegin").style.display = "";
+      $("btnBegin").onclick = () => { $("btnBegin").textContent = "Begin"; setMode("setup"); };
+    }
+  };
+});
+
+function readyForBegin() {
+  $("prepMsg").textContent = "Put the phone in place. Check that your head and both shoulders show when you stand in your prayer position. Then press Begin and go to your place.";
+  $("btnBegin").textContent = "Begin";
+  $("btnBegin").style.display = "";
+  $("btnBegin").onclick = startCountdown;
+}
+
+// ---------- countdown + standing calibration ----------
+function startCountdown() {
+  $("btnBegin").style.display = "none";
+  let n = 8;
+  $("prepMsg").textContent = "Get into position and stand still, facing the phone.";
+  $("count").textContent = n;
+  const iv = setInterval(() => {
+    n--;
+    if (n > 0) { $("count").textContent = n; return; }
+    clearInterval(iv);
+    $("count").textContent = "·";
+    $("prepMsg").textContent = "Hold still...";
+    calSamples = []; calibrating = true;
+    setTimeout(finishCalibration, 2000);
+  }, 1000);
+}
+
+function finishCalibration() {
+  calibrating = false;
+  if (calSamples.length < 15) {
+    $("count").textContent = "";
+    $("prepMsg").textContent = "I could not see you. Adjust the phone so your head and shoulders are visible, then try again.";
+    $("btnBegin").textContent = "Try again"; $("btnBegin").style.display = "";
+    $("btnBegin").onclick = startCountdown;
+    return;
+  }
+  cal = { y0: median(calSamples.map(s => s.y)), sw: median(calSamples.map(s => s.sw)) };
+  rak = 1; dSmooth = null; deep = false; deepSince = null; lastD = 0; lostSince = null; hist = [];
+  evSinceInc = 0; standSince = null; lastInc = -1e9; trace.length = 0;
+  $("num").textContent = rak;
+  $("log").textContent = "";
+  setMode("run");
+  log(`calibrated y0=${cal.y0.toFixed(3)} sw=${cal.sw.toFixed(3)}, target=${target}`);
+  try { navigator.wakeLock.request("screen").then(l => wakeLock = l); } catch (e) {}
+}
+
+// ---------- long-press the number to start over ----------
+let pressTimer = null;
+$("run").addEventListener("pointerdown", () => {
+  pressTimer = setTimeout(() => { setMode("setup"); $("count").textContent = ""; }, 1500);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach(ev =>
+  $("run").addEventListener(ev, () => clearTimeout(pressTimer)));
+
+// ---------- camera loop ----------
+function headPoint(lm) {
+  const V = i => (lm[i].visibility ?? 0);
+  if (V(0) > 0.5) return { y: lm[0].y };
+  const ears = [7, 8].filter(i => V(i) > 0.5);
+  if (ears.length) return { y: ears.reduce((s, i) => s + lm[i].y, 0) / ears.length };
+  if (V(11) > 0.5 && V(12) > 0.5) return { y: (lm[11].y + lm[12].y) / 2 };
+  return null;
+}
+
+let lastVideoTime = -1;
+function loop() {
+  if (video.currentTime !== lastVideoTime && landmarker) {
+    lastVideoTime = video.currentTime;
+    const now = performance.now();
+    const res = landmarker.detectForVideo(video, now);
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+    let tracked = false, d = null;
+    if (res.landmarks && res.landmarks.length) {
+      const lm = res.landmarks[0];
+      const hp = headPoint(lm);
+      const sw = (lm[11].visibility > 0.4 && lm[12].visibility > 0.4)
+        ? Math.hypot(lm[11].x - lm[12].x, lm[11].y - lm[12].y) : null;
+      if (mode === "prep") {
+        for (const i of [0, 7, 8, 11, 12]) {
+          if ((lm[i].visibility ?? 0) < 0.3) continue;
+          octx.fillStyle = i === 0 ? "#4ade80" : "#60a5fa";
+          octx.beginPath(); octx.arc(lm[i].x * overlay.width, lm[i].y * overlay.height, 6, 0, 7); octx.fill();
+        }
+      }
+      if (hp) {
+        tracked = true;
+        if (calibrating && sw) calSamples.push({ y: hp.y, sw });
+        if (cal) {
+          const raw = (hp.y - cal.y0) / cal.sw;
+          dSmooth = dSmooth == null ? raw : dSmooth * 0.6 + raw * 0.4;
+          d = dSmooth;
+        }
+      }
+    }
+    if (mode === "run" && cal) step(now / 1000, tracked, d);
+  }
+  requestAnimationFrame(loop);
+}
+
+// ---------- the state machine ----------
+function step(ts, tr, d) {
+  if (debug) trace.push({ t: ts * 1000, d, tr });
+  if (tr && d != null) {
+    lastD = d; lostSince = null; hist.push([ts, d]);
+  } else {
+    tr = false;
+    if (lostSince == null) lostSince = ts;
+  }
+  while (hist.length && ts - hist[0][0] > CFG.histS) hist.shift();
+  $("dot").classList.toggle("lost", !tr);
+
+  // 1) deep dip (sujood): tracked and low, or lost right after going low
+  const isDeep = tr ? d > (deep ? CFG.exit : CFG.enter)
+                    : (lastD > CFG.lostTrig && ts - lostSince < CFG.lostGiveUpS);
+  if (isDeep) {
+    if (deepSince == null) deepSince = ts;
+    if (!deep && ts - deepSince >= CFG.minDeepS) {
+      deep = true; evSinceInc++;
+      log(`deep dip #${evSinceInc} (d=${lastD.toFixed(2)})`);
+    }
+  } else {
+    deepSince = null;
+    if (deep && tr) { deep = false; log("dip ended"); }
+  }
+
+  // 2) standing again after at least one dip = next rakaat
+  const med = hist.length > 5 ? median(hist.map(h => h[1])) : null;
+  const standing = tr && !deep && med != null && med < CFG.standMed;
+  if (standing && evSinceInc >= 1 && rak < target && ts - lastInc > CFG.minGapS) {
+    if (standSince == null) standSince = ts;
+    if (ts - standSince >= CFG.standHoldS) {
+      rak++; evSinceInc = 0; standSince = null; lastInc = ts;
+      $("num").textContent = rak;
+      log(`RAKAAT -> ${rak}`);
+    }
+  } else standSince = null;
+
+  if (debug) drawPlot(ts * 1000);
+}
+
+function drawPlot(now) {
+  const W = plot.width, H = plot.height, WIN = 40000;
+  const Y = v => H - ((v + 1) / 7) * H, X = t => W - ((now - t) / WIN) * W;
+  pctx.clearRect(0, 0, W, H);
+  for (const [v, c] of [[CFG.enter, "#f59e0b"], [CFG.standMed, "#60a5fa"]]) {
+    pctx.strokeStyle = c; pctx.setLineDash([8, 6]);
+    pctx.beginPath(); pctx.moveTo(0, Y(v)); pctx.lineTo(W, Y(v)); pctx.stroke();
+  }
+  pctx.setLineDash([]); pctx.strokeStyle = "#4ade80"; pctx.lineWidth = 2; pctx.beginPath();
+  let pen = false;
+  for (let i = Math.max(0, trace.length - 3000); i < trace.length; i++) {
+    const r = trace[i]; if (now - r.t > WIN) continue;
+    if (!r.tr || r.d == null) { pen = false; continue; }
+    const x = X(r.t), y = Math.max(0, Math.min(H, Y(r.d)));
+    if (!pen) { pctx.moveTo(x, y); pen = true; } else pctx.lineTo(x, y);
+  }
+  pctx.stroke();
+}
+
+$("btnCsv").onclick = () => {
+  const rows = ["t_ms,d,tracked"].concat(trace.map(r => `${r.t.toFixed(0)},${r.d == null ? "" : r.d.toFixed(3)},${r.tr ? 1 : 0}`));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" }));
+  a.download = "rakaat-trace.csv"; document.body.appendChild(a); a.click(); a.remove();
+};
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && mode === "run") {
+    try { navigator.wakeLock.request("screen").then(l => wakeLock = l); } catch (e) {}
+  }
+});
+</script>
+</body>
+</html>
