@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rakaat Phase 0</title>
+<style>
+  :root { --bg:#0b0b0d; --fg:#e8e8ea; --dim:#8a8a93; --acc:#4ade80; --warn:#f59e0b; --bad:#f87171; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px -apple-system, system-ui, sans-serif;
+         padding: env(safe-area-inset-top) 12px env(safe-area-inset-bottom); }
+  h1 { font-size:16px; margin:12px 0 8px; font-weight:600; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; align-items:center; }
+  button { background:#1f1f25; color:var(--fg); border:1px solid #33333c; border-radius:10px;
+           padding:10px 14px; font-size:15px; }
+  button.primary { background:var(--acc); color:#04230f; border-color:var(--acc); font-weight:600; }
+  .stage { position:relative; width:100%; max-width:420px; margin:0 auto; background:#000; border-radius:12px; overflow:hidden; }
+  video, #overlay { display:block; width:100%; transform:scaleX(-1); }
+  #overlay { position:absolute; left:0; top:0; height:100%; }
+  #status { font-size:13px; color:var(--dim); margin:6px 0; }
+  .big { display:flex; gap:16px; justify-content:center; text-align:center; margin:8px 0; }
+  .big div { min-width:80px; }
+  .big b { display:block; font-size:34px; }
+  .big span { color:var(--dim); font-size:12px; }
+  canvas#plot { width:100%; height:170px; background:#111116; border-radius:10px; display:block; }
+  label { font-size:13px; color:var(--dim); display:block; margin-top:6px; }
+  input[type=range] { width:100%; }
+  #log { font:12px ui-monospace, Menlo, monospace; background:#111116; border-radius:10px; padding:8px;
+         height:150px; overflow:auto; white-space:pre-wrap; color:#b9b9c2; }
+  .ok { color:var(--acc); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+</style>
+</head>
+<body>
+<h1>Rakaat counter: Phase 0 (signal test)</h1>
+
+<div class="row">
+  <button id="btnStart" class="primary">1. Start camera</button>
+  <button id="btnCal">2. Calibrate standing</button>
+  <button id="btnReset">Reset counts</button>
+  <button id="btnCsv">Save trace (CSV)</button>
+</div>
+<div id="status">Not started. Needs internet only for this test page.</div>
+
+<div class="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div class="big">
+  <div><b id="vD">–</b><span>head drop (d)</span></div>
+  <div><b id="vTrack">–</b><span>tracked</span></div>
+  <div><b id="vSuj">0</b><span>sujood events</span></div>
+  <div><b id="vRak">0</b><span>pairs</span></div>
+</div>
+
+<canvas id="plot" width="800" height="340"></canvas>
+
+<label>Deep threshold (sujood when d is above this): <b id="thrVal">2.0</b></label>
+<input id="thr" type="range" min="0.5" max="5" step="0.1" value="2.0">
+<label>Minimum time deep to count (ms): <b id="minVal">400</b></label>
+<input id="minMs" type="range" min="150" max="1200" step="50" value="400">
+
+<h1>Event log</h1>
+<div id="log"></div>
+
+<script type="module">
+import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const $ = id => document.getElementById(id);
+const video = $("video"), overlay = $("overlay"), octx = overlay.getContext("2d");
+const plot = $("plot"), pctx = plot.getContext("2d");
+const logEl = $("log"), statusEl = $("status");
+
+let landmarker = null, running = false, wakeLock = null;
+
+// calibration
+let cal = null;               // {y0, sw}
+let calibrating = false, calSamples = [];
+
+// signal
+let dSmooth = null;
+const trace = [];             // {t, d, tracked, vis}
+const WINDOW_MS = 40000;
+
+// events
+let belowSince = null, inSuj = false, sujCount = 0, pairCount = 0;
+let lastSujEnd = null, pendingFirst = false;
+let lastTracked = false, lastD = null;
+
+function log(msg, cls = "") {
+  const t = (performance.now() / 1000).toFixed(1).padStart(6);
+  const line = document.createElement("div");
+  line.className = cls;
+  line.textContent = `${t}s  ${msg}`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+$("thr").oninput = e => $("thrVal").textContent = (+e.target.value).toFixed(1);
+$("minMs").oninput = e => $("minVal").textContent = e.target.value;
+
+$("btnStart").onclick = async () => {
+  if (running) return;
+  statusEl.textContent = "Loading model...";
+  try {
+    const fileset = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+    landmarker = await PoseLandmarker.createFromOptions(fileset, {
+      baseOptions: {
+        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+        delegate: "GPU"
+      },
+      runningMode: "VIDEO",
+      numPoses: 1,
+      minPoseDetectionConfidence: 0.4,
+      minPosePresenceConfidence: 0.4,
+      minTrackingConfidence: 0.4
+    });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    overlay.width = video.videoWidth; overlay.height = video.videoHeight;
+    try { wakeLock = await navigator.wakeLock.request("screen"); } catch (e) { /* optional */ }
+    running = true;
+    statusEl.textContent = "Running. Stand where you pray, then press Calibrate.";
+    log("camera + model ready (video " + video.videoWidth + "x" + video.videoHeight + ")", "ok");
+    requestAnimationFrame(loop);
+  } catch (err) {
+    statusEl.textContent = "Error: " + err.message;
+    log("start failed: " + err.message, "bad");
+  }
+};
+
+$("btnCal").onclick = () => {
+  if (!running) return;
+  let n = 3;
+  statusEl.textContent = "Stand still facing the phone... " + n;
+  const iv = setInterval(() => {
+    n--;
+    if (n > 0) { statusEl.textContent = "Stand still facing the phone... " + n; return; }
+    clearInterval(iv);
+    calSamples = []; calibrating = true;
+    statusEl.textContent = "Recording standing pose (2 s)...";
+    setTimeout(() => {
+      calibrating = false;
+      if (calSamples.length < 10) {
+        statusEl.textContent = "Calibration failed: person not seen. Check framing.";
+        log("calibration failed (" + calSamples.length + " samples)", "bad");
+        return;
+      }
+      const med = a => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+      cal = { y0: med(calSamples.map(s => s.y)), sw: med(calSamples.map(s => s.sw)) };
+      dSmooth = null; belowSince = null; inSuj = false;
+      statusEl.textContent = "Calibrated. Now do a prayer (or just the movements).";
+      log(`calibrated: y0=${cal.y0.toFixed(3)} shoulderWidth=${cal.sw.toFixed(3)}`, "ok");
+    }, 2000);
+  }, 1000);
+};
+
+$("btnReset").onclick = () => {
+  sujCount = 0; pairCount = 0; inSuj = false; belowSince = null; pendingFirst = false; lastSujEnd = null;
+  $("vSuj").textContent = 0; $("vRak").textContent = 0;
+  trace.length = 0; logEl.innerHTML = "";
+  log("counts reset");
+};
+
+$("btnCsv").onclick = () => {
+  const rows = ["t_ms,d,tracked,visibility"].concat(trace.map(r =>
+    `${r.t.toFixed(0)},${r.d == null ? "" : r.d.toFixed(3)},${r.tracked ? 1 : 0},${r.vis.toFixed(2)}`));
+  const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "rakaat-trace.csv";
+  document.body.appendChild(a); a.click(); a.remove();
+};
+
+// Pick a head reference point: nose if visible, else ears, else shoulders midpoint.
+function headPoint(lm) {
+  const V = i => (lm[i].visibility ?? 0);
+  if (V(0) > 0.5) return { y: lm[0].y, vis: V(0), src: "nose" };
+  if (V(7) > 0.5 || V(8) > 0.5) {
+    const pts = [7, 8].filter(i => V(i) > 0.5);
+    return { y: pts.reduce((s, i) => s + lm[i].y, 0) / pts.length, vis: Math.max(V(7), V(8)), src: "ears" };
+  }
+  if (V(11) > 0.5 && V(12) > 0.5) return { y: (lm[11].y + lm[12].y) / 2, vis: Math.min(V(11), V(12)), src: "shoulders" };
+  return null;
+}
+
+let lastVideoTime = -1;
+function loop() {
+  if (!running) return;
+  if (video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    const now = performance.now();
+    const res = landmarker.detectForVideo(video, now);
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+    let tracked = false, d = null, vis = 0;
+
+    if (res.landmarks && res.landmarks.length) {
+      const lm = res.landmarks[0];
+      const hp = headPoint(lm);
+      const sw = (lm[11].visibility > 0.4 && lm[12].visibility > 0.4)
+        ? Math.hypot(lm[11].x - lm[12].x, lm[11].y - lm[12].y) : null;
+
+      // draw key points
+      for (const i of [0, 7, 8, 11, 12]) {
+        if ((lm[i].visibility ?? 0) < 0.3) continue;
+        octx.fillStyle = i === 0 ? "#4ade80" : "#60a5fa";
+        octx.beginPath(); octx.arc(lm[i].x * overlay.width, lm[i].y * overlay.height, 6, 0, 7); octx.fill();
+      }
+
+      if (hp) {
+        tracked = true; vis = hp.vis;
+        if (calibrating && sw) calSamples.push({ y: hp.y, sw });
+        if (cal) {
+          const raw = (hp.y - cal.y0) / cal.sw;
+          dSmooth = dSmooth == null ? raw : dSmooth * 0.6 + raw * 0.4;
+          d = dSmooth;
+        }
+      }
+    }
+    update(now, tracked, d, vis);
+  }
+  requestAnimationFrame(loop);
+}
+
+function update(now, tracked, d, vis) {
+  const thr = +$("thr").value, minMs = +$("minMs").value;
+  trace.push({ t: now, d, tracked, vis });
+  while (trace.length && now - trace[0].t > WINDOW_MS * 6) trace.shift();
+
+  $("vTrack").textContent = tracked ? "yes" : "NO";
+  $("vTrack").className = tracked ? "ok" : "bad";
+  $("vD").textContent = d == null ? "–" : d.toFixed(1);
+
+  if (cal) {
+    // Tracking transitions
+    if (!tracked && lastTracked) log(`tracking LOST (last d=${lastD == null ? "?" : lastD.toFixed(2)})`, "warn");
+    if (tracked && !lastTracked) log(`tracking back (d=${d == null ? "?" : d.toFixed(2)})`, "warn");
+
+    if (tracked && d != null) {
+      if (d > thr) {
+        if (belowSince == null) belowSince = now;
+        if (!inSuj && now - belowSince >= minMs) {
+          inSuj = true; sujCount++; $("vSuj").textContent = sujCount;
+          log(`SUJOOD #${sujCount} start (d=${d.toFixed(2)})`, "ok");
+          if (pendingFirst) { pairCount++; pendingFirst = false; $("vRak").textContent = pairCount; log(`  -> pair #${pairCount}`, "ok"); }
+          else pendingFirst = true;
+        }
+      } else if (d < thr * 0.6) {
+        belowSince = null;
+        if (inSuj) { inSuj = false; lastSujEnd = now; log(`sujood end (d=${d.toFixed(2)})`); }
+      }
+      lastD = d;
+    }
+    lastTracked = tracked;
+  }
+  draw(now, thr);
+}
+
+function draw(now, thr) {
+  const W = plot.width, H = plot.height;
+  pctx.clearRect(0, 0, W, H);
+  const yMin = -1, yMax = 6;
+  const Y = v => H - ((v - yMin) / (yMax - yMin)) * H;
+  const X = t => W - ((now - t) / WINDOW_MS) * W;
+
+  // zero line and threshold
+  pctx.strokeStyle = "#2a2a33"; pctx.lineWidth = 1;
+  pctx.beginPath(); pctx.moveTo(0, Y(0)); pctx.lineTo(W, Y(0)); pctx.stroke();
+  pctx.strokeStyle = "#f59e0b"; pctx.setLineDash([8, 6]);
+  pctx.beginPath(); pctx.moveTo(0, Y(thr)); pctx.lineTo(W, Y(thr)); pctx.stroke(); pctx.setLineDash([]);
+
+  // untracked shading
+  pctx.fillStyle = "rgba(248,113,113,0.18)";
+  let runStart = null;
+  for (const r of trace) {
+    if (now - r.t > WINDOW_MS) continue;
+    if (!r.tracked && runStart == null) runStart = r.t;
+    if (r.tracked && runStart != null) { pctx.fillRect(X(runStart), 0, X(r.t) - X(runStart), H); runStart = null; }
+  }
+  if (runStart != null) pctx.fillRect(X(runStart), 0, W - X(runStart), H);
+
+  // curve
+  pctx.strokeStyle = "#4ade80"; pctx.lineWidth = 3; pctx.beginPath();
+  let pen = false;
+  for (const r of trace) {
+    if (now - r.t > WINDOW_MS) continue;
+    if (r.d == null || !r.tracked) { pen = false; continue; }
+    const x = X(r.t), y = Math.max(0, Math.min(H, Y(r.d)));
+    if (!pen) { pctx.moveTo(x, y); pen = true; } else pctx.lineTo(x, y);
+  }
+  pctx.stroke();
+  pctx.fillStyle = "#8a8a93"; pctx.font = "20px sans-serif";
+  pctx.fillText("d = 0 standing; up = higher, down = lower. Orange line = threshold. Red = lost", 8, 22);
+}
+
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "visible" && running) {
+    try { wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+  }
+});
+</script>
+</body>
+</html>
