@@ -1,216 +1,314 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="kk">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Rakaat Phase 0</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Ракағат">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>Ракағат</title>
 <style>
-  :root { --bg:#0b0b0d; --fg:#e8e8ea; --dim:#8a8a93; --acc:#4ade80; --warn:#f59e0b; --bad:#f87171; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:15px -apple-system, system-ui, sans-serif;
-         padding: env(safe-area-inset-top) 12px env(safe-area-inset-bottom); }
-  h1 { font-size:16px; margin:12px 0 8px; font-weight:600; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; align-items:center; }
-  button { background:#1f1f25; color:var(--fg); border:1px solid #33333c; border-radius:10px;
-           padding:10px 14px; font-size:15px; }
-  button.primary { background:var(--acc); color:#04230f; border-color:var(--acc); font-weight:600; }
-  .stage { position:relative; width:100%; max-width:420px; margin:0 auto; background:#000; border-radius:12px; overflow:hidden; }
+  :root { --fg:#e8e8ea; --dim:#8a8a93; --acc:#4ade80; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { height:100%; margin:0; background:#000; color:var(--fg);
+    font:16px -apple-system, system-ui, sans-serif; }
+  body { padding: env(safe-area-inset-top) 14px env(safe-area-inset-bottom); }
+  button { background:#1b1b21; color:var(--fg); border:1px solid #33333c; border-radius:14px;
+           padding:16px 18px; font-size:18px; font-weight:600; }
+  button.primary { background:var(--acc); color:#04230f; border-color:var(--acc); }
+  .screen { display:none; flex-direction:column; align-items:center; gap:14px; padding-top:16px; }
+  body[data-mode="setup"] #setup,
+  body[data-mode="prep"] #prep { display:flex; }
+  #prayers { display:grid; grid-template-columns:1fr 1fr; gap:12px; width:100%; max-width:380px; }
+  #prayers button { padding:22px 8px; }
+  #prayers small { display:block; color:var(--dim); font-weight:400; font-size:13px; margin-top:4px; }
+  .msg { color:var(--dim); text-align:center; max-width:340px; line-height:1.4; min-height:22px; }
+  .small { font-size:13px; }
+  .count { font-size:90px; font-weight:200; min-height:100px; }
+
+  #stageWrap { width:100%; max-width:340px; margin:0 auto; position:relative;
+               background:#000; border-radius:12px; overflow:hidden; }
   video, #overlay { display:block; width:100%; transform:scaleX(-1); }
   #overlay { position:absolute; left:0; top:0; height:100%; }
-  #status { font-size:13px; color:var(--dim); margin:6px 0; }
-  .big { display:flex; gap:16px; justify-content:center; text-align:center; margin:8px 0; }
-  .big div { min-width:80px; }
-  .big b { display:block; font-size:34px; }
-  .big span { color:var(--dim); font-size:12px; }
-  canvas#plot { width:100%; height:170px; background:#111116; border-radius:10px; display:block; }
-  label { font-size:13px; color:var(--dim); display:block; margin-top:6px; }
-  input[type=range] { width:100%; }
-  #log { font:12px ui-monospace, Menlo, monospace; background:#111116; border-radius:10px; padding:8px;
-         height:150px; overflow:auto; white-space:pre-wrap; color:#b9b9c2; }
-  .ok { color:var(--acc); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  /* the camera keeps running but is invisible outside the preparation screen */
+  body:not([data-mode="prep"]) #stageWrap { position:fixed; left:0; top:0; width:2px; height:2px;
+       opacity:0.01; pointer-events:none; z-index:-1; }
+
+  #run { position:fixed; inset:0; background:#000; z-index:10; display:none;
+         align-items:center; justify-content:center; user-select:none; -webkit-user-select:none;
+         -webkit-touch-callout:none; touch-action:manipulation; }
+  body[data-mode="run"] #run { display:flex; }
+  #num { font-size:min(72vh, 88vw); font-weight:200; line-height:1; color:#9a9aa5; }
+  #dot { position:fixed; top:calc(env(safe-area-inset-top) + 10px); right:10px; width:7px; height:7px;
+         border-radius:50%; background:#1f3d27; }
+  #dot.lost { background:#4a1f1f; }
+
+  body.debug[data-mode="run"] #run { bottom:auto; height:45vh; }
+  body.debug[data-mode="run"] #num { font-size:34vh; }
+  #debugPanel { display:none; position:fixed; left:0; right:0; bottom:0; height:55vh; z-index:11;
+         background:#0b0b0d; padding:8px 10px env(safe-area-inset-bottom); overflow:auto; }
+  body.debug[data-mode="run"] #debugPanel { display:block; }
+  canvas#plot { width:100%; height:110px; background:#111116; border-radius:8px; display:block; }
+  #log { font:11px ui-monospace, Menlo, monospace; color:#b9b9c2; white-space:pre-wrap; margin-top:6px; }
+  label.dbgtoggle { color:var(--dim); font-size:14px; display:flex; gap:8px; align-items:center; margin-top:14px; }
+  #setup h1 { font-size:15px; font-weight:500; color:var(--dim); margin:4px 0 0; }
 </style>
 </head>
-<body>
-<h1>Rakaat counter: Phase 0 (signal test)</h1>
+<body data-mode="setup">
 
-<div class="row">
-  <button id="btnStart" class="primary">1. Start camera</button>
-  <button id="btnCal">2. Calibrate standing</button>
-  <button id="btnReset">Reset counts</button>
-  <button id="btnCsv">Save trace (CSV)</button>
-</div>
-<div id="status">Not started. Needs internet only for this test page.</div>
-
-<div class="stage">
+<div id="stageWrap">
   <video id="video" playsinline muted></video>
   <canvas id="overlay"></canvas>
 </div>
 
-<div class="big">
-  <div><b id="vD">–</b><span>head drop (d)</span></div>
-  <div><b id="vTrack">–</b><span>tracked</span></div>
-  <div><b id="vSuj">0</b><span>sujood events</span></div>
-  <div><b id="vRak">0</b><span>pairs</span></div>
+<!-- 1. choose prayer -->
+<div id="setup" class="screen">
+  <h1>Намазды таңдаңыз</h1>
+  <div id="prayers">
+    <button data-n="2">БАМДАТ<small>2</small></button>
+    <button data-n="3">АҚШАМ<small>3</small></button>
+    <button data-n="4">БЕСІН<small>4</small></button>
+    <button data-n="4">ЕКІНТІ<small>4</small></button>
+    <button data-n="4">ҚҰПТАН<small>4</small></button>
+  </div>
+  <div class="msg" id="setupMsg"></div>
+  <div class="msg small" id="offlineMsg"></div>
+  <div class="msg small">Басынан бастау үшін намаз кезінде санды ұзақ басып тұрыңыз.</div>
+  <label class="dbgtoggle"><input type="checkbox" id="dbgChk"> жөндеу көрінісі</label>
 </div>
 
-<canvas id="plot" width="800" height="340"></canvas>
+<!-- 2. position + calibrate -->
+<div id="prep" class="screen">
+  <div class="count" id="count"></div>
+  <div class="msg" id="prepMsg">...</div>
+  <button class="primary" id="btnBegin" style="display:none">Бастау</button>
+</div>
 
-<label>Deep threshold (sujood when d is above this): <b id="thrVal">2.0</b></label>
-<input id="thr" type="range" min="0.5" max="5" step="0.1" value="2.0">
-<label>Minimum time deep to count (ms): <b id="minVal">400</b></label>
-<input id="minMs" type="range" min="150" max="1200" step="50" value="400">
-
-<h1>Event log</h1>
-<div id="log"></div>
+<!-- 3. run -->
+<div id="run"><div id="num">1</div><div id="dot"></div></div>
+<div id="debugPanel">
+  <canvas id="plot" width="800" height="220"></canvas>
+  <button id="btnCsv" style="padding:8px 12px;font-size:13px;margin-top:6px">CSV сақтау</button>
+  <div id="log"></div>
+</div>
 
 <script type="module">
-import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
-
 const $ = id => document.getElementById(id);
 const video = $("video"), overlay = $("overlay"), octx = overlay.getContext("2d");
 const plot = $("plot"), pctx = plot.getContext("2d");
-const logEl = $("log"), statusEl = $("status");
 
-let landmarker = null, running = false, wakeLock = null;
+const CACHE = "rakaat-v2";   // must match sw.js
+const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+const MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
-// calibration
-let cal = null;               // {y0, sw}
-let calibrating = false, calSamples = [];
+// Detector settings (tuned on real prayers)
+const CFG = {
+  enter: 1.9,        // d above this = deep dip (sujood)
+  exit: 1.75,        // d below this (while tracked) = dip ended
+  lostTrig: 1.6,     // tracking lost right after d above this = still deep
+  minDeepS: 0.3,     // dip must last this long
+  lostGiveUpS: 8,    // lost this long = person probably left; stop assuming "deep"
+  standMed: 0.5,     // median d below this = standing
+  standHoldS: 1.5,   // must stay standing this long
+  histS: 0.6,        // window for the median
+  minGapS: 3,        // minimum time between two increments
+  finishS: 300       // after the last rakaat is reached, go back to the menu after this long
+};
 
-// signal
+let mode = "setup";
+let landmarker = null, stream = null, loopStarted = false, wakeLock = null, debug = false;
+let target = 4, rak = 1;
+let cal = null, calibrating = false, calSamples = [];
 let dSmooth = null;
-const trace = [];             // {t, d, tracked, vis}
-const WINDOW_MS = 40000;
 
-// events
-let belowSince = null, inSuj = false, sujCount = 0, pairCount = 0;
-let lastSujEnd = null, pendingFirst = false;
-let lastTracked = false, lastD = null;
+// detector state
+let deep = false, deepSince = null, lastD = 0, lostSince = null, hist = [];
+let evSinceInc = 0, standSince = null, lastInc = -1e9;
+const trace = [];
 
-function log(msg, cls = "") {
-  const t = (performance.now() / 1000).toFixed(1).padStart(6);
-  const line = document.createElement("div");
-  line.className = cls;
-  line.textContent = `${t}s  ${msg}`;
-  logEl.appendChild(line);
-  logEl.scrollTop = logEl.scrollHeight;
+function setMode(m) { mode = m; document.body.dataset.mode = m; }
+function log(msg) {
+  if (!debug) return;
+  const el = $("log"); const t = (performance.now() / 1000).toFixed(1);
+  el.textContent += `${t}s ${msg}\n`; $("debugPanel").scrollTop = $("debugPanel").scrollHeight;
+}
+function median(a) { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; }
+
+$("dbgChk").onchange = e => { debug = e.target.checked; document.body.classList.toggle("debug", debug); };
+
+// ---------- offline support ----------
+async function updateOffline() {
+  try {
+    const keys = (await (await caches.open(CACHE)).keys()).map(r => r.url);
+    const ok = keys.some(u => u.includes("pose_landmarker_lite.task"))
+            && keys.some(u => u.includes("vision_bundle.mjs"))
+            && keys.some(u => u.endsWith(".wasm"));
+    $("offlineMsg").textContent = ok ? "Офлайн жұмысқа дайын ✓" : "Алғаш рет интернет қажет: модель жүктеліп, сақталады.";
+  } catch (e) { /* ignore */ }
+}
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch(() => {});
+  navigator.serviceWorker.ready.then(() => setTimeout(updateOffline, 1500));
+}
+updateOffline();
+
+// ---------- camera + model ----------
+async function startCamera() {
+  if (stream && stream.active) return;
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+  video.srcObject = stream; await video.play();
+  overlay.width = video.videoWidth; overlay.height = video.videoHeight;
+  lastVideoTime = -1;
+}
+function stopCamera() {
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  video.srcObject = null;
+}
+async function loadModel() {
+  if (landmarker) return;
+  if ("serviceWorker" in navigator) {
+    try {
+      await navigator.serviceWorker.ready;
+      if (!navigator.serviceWorker.controller)
+        await new Promise(r => { navigator.serviceWorker.addEventListener("controllerchange", r, { once: true }); setTimeout(r, 3000); });
+    } catch (e) { /* continue without */ }
+  }
+  const { PoseLandmarker, FilesetResolver } = await import(MP + "/vision_bundle.mjs");
+  const fileset = await FilesetResolver.forVisionTasks(MP + "/wasm");
+  landmarker = await PoseLandmarker.createFromOptions(fileset, {
+    baseOptions: { modelAssetPath: MODEL, delegate: "GPU" },
+    runningMode: "VIDEO", numPoses: 1,
+    minPoseDetectionConfidence: 0.4, minPosePresenceConfidence: 0.4, minTrackingConfidence: 0.4 });
 }
 
-$("thr").oninput = e => $("thrVal").textContent = (+e.target.value).toFixed(1);
-$("minMs").oninput = e => $("minVal").textContent = e.target.value;
+// ---------- setup: choose prayer ----------
+document.querySelectorAll("#prayers button").forEach(b => {
+  b.onclick = async () => {
+    target = +b.dataset.n;
+    $("setupMsg").textContent = "";
+    setMode("prep");
+    $("btnBegin").style.display = "none";
+    $("count").textContent = "";
+    try {
+      $("prepMsg").textContent = "Камера қосылуда...";
+      await startCamera();
+      if (!landmarker) {
+        $("prepMsg").textContent = "Модель жүктелуде (алғаш рет интернет қажет)...";
+        await loadModel();
+      }
+      if (!loopStarted) { loopStarted = true; requestAnimationFrame(loop); }
+      readyForBegin();
+      setTimeout(updateOffline, 1000);
+    } catch (err) {
+      $("prepMsg").textContent = "Қате: " + err.message;
+      $("btnBegin").textContent = "Артқа"; $("btnBegin").style.display = "";
+      $("btnBegin").onclick = () => setMode("setup");
+    }
+  };
+});
 
-$("btnStart").onclick = async () => {
-  if (running) return;
-  statusEl.textContent = "Loading model...";
-  try {
-    const fileset = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
-    landmarker = await PoseLandmarker.createFromOptions(fileset, {
-      baseOptions: {
-        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
-        delegate: "GPU"
-      },
-      runningMode: "VIDEO",
-      numPoses: 1,
-      minPoseDetectionConfidence: 0.4,
-      minPosePresenceConfidence: 0.4,
-      minTrackingConfidence: 0.4
-    });
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false
-    });
-    video.srcObject = stream;
-    await video.play();
-    overlay.width = video.videoWidth; overlay.height = video.videoHeight;
-    try { wakeLock = await navigator.wakeLock.request("screen"); } catch (e) { /* optional */ }
-    running = true;
-    statusEl.textContent = "Running. Stand where you pray, then press Calibrate.";
-    log("camera + model ready (video " + video.videoWidth + "x" + video.videoHeight + ")", "ok");
-    requestAnimationFrame(loop);
-  } catch (err) {
-    statusEl.textContent = "Error: " + err.message;
-    log("start failed: " + err.message, "bad");
-  }
-};
+function readyForBegin() {
+  $("prepMsg").textContent = "Телефонды орнына қойыңыз. Намаз оқитын орында тұрғанда басыңыз бен екі иығыңыз көрінетінін тексеріңіз. Содан кейін «Бастау» батырмасын басып, өз орныңызға тұрыңыз.";
+  $("btnBegin").textContent = "Бастау";
+  $("btnBegin").style.display = "";
+  $("btnBegin").onclick = startCountdown;
+}
 
-$("btnCal").onclick = () => {
-  if (!running) return;
-  let n = 3;
-  statusEl.textContent = "Stand still facing the phone... " + n;
+// ---------- countdown + standing calibration ----------
+function startCountdown() {
+  $("btnBegin").style.display = "none";
+  let n = 8;
+  $("prepMsg").textContent = "Орныңызға тұрып, телефонға қарап қозғалмай тұрыңыз.";
+  $("count").textContent = n;
   const iv = setInterval(() => {
     n--;
-    if (n > 0) { statusEl.textContent = "Stand still facing the phone... " + n; return; }
+    if (n > 0) { $("count").textContent = n; return; }
     clearInterval(iv);
+    $("count").textContent = "·";
+    $("prepMsg").textContent = "Қозғалмаңыз...";
     calSamples = []; calibrating = true;
-    statusEl.textContent = "Recording standing pose (2 s)...";
-    setTimeout(() => {
-      calibrating = false;
-      if (calSamples.length < 10) {
-        statusEl.textContent = "Calibration failed: person not seen. Check framing.";
-        log("calibration failed (" + calSamples.length + " samples)", "bad");
-        return;
-      }
-      const med = a => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
-      cal = { y0: med(calSamples.map(s => s.y)), sw: med(calSamples.map(s => s.sw)) };
-      dSmooth = null; belowSince = null; inSuj = false;
-      statusEl.textContent = "Calibrated. Now do a prayer (or just the movements).";
-      log(`calibrated: y0=${cal.y0.toFixed(3)} shoulderWidth=${cal.sw.toFixed(3)}`, "ok");
-    }, 2000);
+    setTimeout(finishCalibration, 2000);
   }, 1000);
-};
+}
 
-$("btnReset").onclick = () => {
-  sujCount = 0; pairCount = 0; inSuj = false; belowSince = null; pendingFirst = false; lastSujEnd = null;
-  $("vSuj").textContent = 0; $("vRak").textContent = 0;
-  trace.length = 0; logEl.innerHTML = "";
-  log("counts reset");
-};
+function finishCalibration() {
+  calibrating = false;
+  if (calSamples.length < 15) {
+    $("count").textContent = "";
+    $("prepMsg").textContent = "Мен сізді көре алмадым. Телефонды басыңыз бен иықтарыңыз көрінетіндей реттеп, қайта көріңіз.";
+    $("btnBegin").textContent = "Қайта көру"; $("btnBegin").style.display = "";
+    $("btnBegin").onclick = startCountdown;
+    return;
+  }
+  cal = { y0: median(calSamples.map(s => s.y)), sw: median(calSamples.map(s => s.sw)) };
+  rak = 1; dSmooth = null; deep = false; deepSince = null; lastD = 0; lostSince = null; hist = [];
+  evSinceInc = 0; standSince = null; lastInc = performance.now() / 1000; trace.length = 0;
+  $("num").textContent = rak;
+  $("log").textContent = "";
+  setMode("run");
+  log(`calibrated y0=${cal.y0.toFixed(3)} sw=${cal.sw.toFixed(3)}, target=${target}`);
+  requestWake();
+}
 
-$("btnCsv").onclick = () => {
-  const rows = ["t_ms,d,tracked,visibility"].concat(trace.map(r =>
-    `${r.t.toFixed(0)},${r.d == null ? "" : r.d.toFixed(3)},${r.tracked ? 1 : 0},${r.vis.toFixed(2)}`));
-  const blob = new Blob([rows.join("\n")], { type: "text/csv" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob); a.download = "rakaat-trace.csv";
-  document.body.appendChild(a); a.click(); a.remove();
-};
+function requestWake() {
+  try { navigator.wakeLock.request("screen").then(l => wakeLock = l); } catch (e) {}
+}
 
-// Pick a head reference point: nose if visible, else ears, else shoulders midpoint.
+// ---------- long-press the number to start over ----------
+let pressTimer = null;
+$("run").addEventListener("pointerdown", () => {
+  pressTimer = setTimeout(() => { setMode("setup"); $("count").textContent = ""; $("setupMsg").textContent = ""; }, 1500);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach(ev =>
+  $("run").addEventListener(ev, () => clearTimeout(pressTimer)));
+
+// ---------- prayer finished: back to the menu, camera off ----------
+function finishPrayer() {
+  log("prayer finished");
+  stopCamera();
+  try { wakeLock && wakeLock.release(); } catch (e) {}
+  wakeLock = null;
+  setMode("setup");
+  $("setupMsg").textContent = "Намаз аяқталды.";
+}
+
+// ---------- camera loop ----------
 function headPoint(lm) {
   const V = i => (lm[i].visibility ?? 0);
-  if (V(0) > 0.5) return { y: lm[0].y, vis: V(0), src: "nose" };
-  if (V(7) > 0.5 || V(8) > 0.5) {
-    const pts = [7, 8].filter(i => V(i) > 0.5);
-    return { y: pts.reduce((s, i) => s + lm[i].y, 0) / pts.length, vis: Math.max(V(7), V(8)), src: "ears" };
-  }
-  if (V(11) > 0.5 && V(12) > 0.5) return { y: (lm[11].y + lm[12].y) / 2, vis: Math.min(V(11), V(12)), src: "shoulders" };
+  if (V(0) > 0.5) return { y: lm[0].y };
+  const ears = [7, 8].filter(i => V(i) > 0.5);
+  if (ears.length) return { y: ears.reduce((s, i) => s + lm[i].y, 0) / ears.length };
+  if (V(11) > 0.5 && V(12) > 0.5) return { y: (lm[11].y + lm[12].y) / 2 };
   return null;
 }
 
 let lastVideoTime = -1;
 function loop() {
-  if (!running) return;
-  if (video.currentTime !== lastVideoTime) {
+  if (stream && landmarker && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
     const now = performance.now();
     const res = landmarker.detectForVideo(video, now);
     octx.clearRect(0, 0, overlay.width, overlay.height);
-    let tracked = false, d = null, vis = 0;
-
+    let tracked = false, d = null;
     if (res.landmarks && res.landmarks.length) {
       const lm = res.landmarks[0];
       const hp = headPoint(lm);
       const sw = (lm[11].visibility > 0.4 && lm[12].visibility > 0.4)
         ? Math.hypot(lm[11].x - lm[12].x, lm[11].y - lm[12].y) : null;
-
-      // draw key points
-      for (const i of [0, 7, 8, 11, 12]) {
-        if ((lm[i].visibility ?? 0) < 0.3) continue;
-        octx.fillStyle = i === 0 ? "#4ade80" : "#60a5fa";
-        octx.beginPath(); octx.arc(lm[i].x * overlay.width, lm[i].y * overlay.height, 6, 0, 7); octx.fill();
+      if (mode === "prep") {
+        for (const i of [0, 7, 8, 11, 12]) {
+          if ((lm[i].visibility ?? 0) < 0.3) continue;
+          octx.fillStyle = i === 0 ? "#4ade80" : "#60a5fa";
+          octx.beginPath(); octx.arc(lm[i].x * overlay.width, lm[i].y * overlay.height, 6, 0, 7); octx.fill();
+        }
       }
-
       if (hp) {
-        tracked = true; vis = hp.vis;
+        tracked = true;
         if (calibrating && sw) calSamples.push({ y: hp.y, sw });
         if (cal) {
           const raw = (hp.y - cal.y0) / cal.sw;
@@ -219,86 +317,83 @@ function loop() {
         }
       }
     }
-    update(now, tracked, d, vis);
+    if (mode === "run" && cal) step(now / 1000, tracked, d);
   }
   requestAnimationFrame(loop);
 }
 
-function update(now, tracked, d, vis) {
-  const thr = +$("thr").value, minMs = +$("minMs").value;
-  trace.push({ t: now, d, tracked, vis });
-  while (trace.length && now - trace[0].t > WINDOW_MS * 6) trace.shift();
-
-  $("vTrack").textContent = tracked ? "yes" : "NO";
-  $("vTrack").className = tracked ? "ok" : "bad";
-  $("vD").textContent = d == null ? "–" : d.toFixed(1);
-
-  if (cal) {
-    // Tracking transitions
-    if (!tracked && lastTracked) log(`tracking LOST (last d=${lastD == null ? "?" : lastD.toFixed(2)})`, "warn");
-    if (tracked && !lastTracked) log(`tracking back (d=${d == null ? "?" : d.toFixed(2)})`, "warn");
-
-    if (tracked && d != null) {
-      if (d > thr) {
-        if (belowSince == null) belowSince = now;
-        if (!inSuj && now - belowSince >= minMs) {
-          inSuj = true; sujCount++; $("vSuj").textContent = sujCount;
-          log(`SUJOOD #${sujCount} start (d=${d.toFixed(2)})`, "ok");
-          if (pendingFirst) { pairCount++; pendingFirst = false; $("vRak").textContent = pairCount; log(`  -> pair #${pairCount}`, "ok"); }
-          else pendingFirst = true;
-        }
-      } else if (d < thr * 0.6) {
-        belowSince = null;
-        if (inSuj) { inSuj = false; lastSujEnd = now; log(`sujood end (d=${d.toFixed(2)})`); }
-      }
-      lastD = d;
-    }
-    lastTracked = tracked;
+// ---------- the state machine ----------
+function step(ts, tr, d) {
+  if (debug) trace.push({ t: ts * 1000, d, tr });
+  if (tr && d != null) {
+    lastD = d; lostSince = null; hist.push([ts, d]);
+  } else {
+    tr = false;
+    if (lostSince == null) lostSince = ts;
   }
-  draw(now, thr);
+  while (hist.length && ts - hist[0][0] > CFG.histS) hist.shift();
+  $("dot").classList.toggle("lost", !tr);
+
+  // 1) deep dip (sujood): tracked and low, or lost right after going low
+  const isDeep = tr ? d > (deep ? CFG.exit : CFG.enter)
+                    : (lastD > CFG.lostTrig && ts - lostSince < CFG.lostGiveUpS);
+  if (isDeep) {
+    if (deepSince == null) deepSince = ts;
+    if (!deep && ts - deepSince >= CFG.minDeepS) {
+      deep = true; evSinceInc++;
+      log(`deep dip #${evSinceInc} (d=${lastD.toFixed(2)})`);
+    }
+  } else {
+    deepSince = null;
+    if (deep && tr) { deep = false; log("dip ended"); }
+  }
+
+  // 2) standing again after at least one dip = next rakaat
+  const med = hist.length > 5 ? median(hist.map(h => h[1])) : null;
+  const standing = tr && !deep && med != null && med < CFG.standMed;
+  if (standing && evSinceInc >= 1 && rak < target && ts - lastInc > CFG.minGapS) {
+    if (standSince == null) standSince = ts;
+    if (ts - standSince >= CFG.standHoldS) {
+      rak++; evSinceInc = 0; standSince = null; lastInc = ts;
+      $("num").textContent = rak;
+      log(`RAKAAT -> ${rak}`);
+    }
+  } else standSince = null;
+
+  if (debug) drawPlot(ts * 1000);
+
+  // 3) last rakaat reached and enough time has passed: prayer is over
+  if (rak >= target && ts - lastInc > CFG.finishS) finishPrayer();
 }
 
-function draw(now, thr) {
-  const W = plot.width, H = plot.height;
+function drawPlot(now) {
+  const W = plot.width, H = plot.height, WIN = 40000;
+  const Y = v => H - ((v + 1) / 7) * H, X = t => W - ((now - t) / WIN) * W;
   pctx.clearRect(0, 0, W, H);
-  const yMin = -1, yMax = 6;
-  const Y = v => H - ((v - yMin) / (yMax - yMin)) * H;
-  const X = t => W - ((now - t) / WINDOW_MS) * W;
-
-  // zero line and threshold
-  pctx.strokeStyle = "#2a2a33"; pctx.lineWidth = 1;
-  pctx.beginPath(); pctx.moveTo(0, Y(0)); pctx.lineTo(W, Y(0)); pctx.stroke();
-  pctx.strokeStyle = "#f59e0b"; pctx.setLineDash([8, 6]);
-  pctx.beginPath(); pctx.moveTo(0, Y(thr)); pctx.lineTo(W, Y(thr)); pctx.stroke(); pctx.setLineDash([]);
-
-  // untracked shading
-  pctx.fillStyle = "rgba(248,113,113,0.18)";
-  let runStart = null;
-  for (const r of trace) {
-    if (now - r.t > WINDOW_MS) continue;
-    if (!r.tracked && runStart == null) runStart = r.t;
-    if (r.tracked && runStart != null) { pctx.fillRect(X(runStart), 0, X(r.t) - X(runStart), H); runStart = null; }
+  for (const [v, c] of [[CFG.enter, "#f59e0b"], [CFG.standMed, "#60a5fa"]]) {
+    pctx.strokeStyle = c; pctx.setLineDash([8, 6]);
+    pctx.beginPath(); pctx.moveTo(0, Y(v)); pctx.lineTo(W, Y(v)); pctx.stroke();
   }
-  if (runStart != null) pctx.fillRect(X(runStart), 0, W - X(runStart), H);
-
-  // curve
-  pctx.strokeStyle = "#4ade80"; pctx.lineWidth = 3; pctx.beginPath();
+  pctx.setLineDash([]); pctx.strokeStyle = "#4ade80"; pctx.lineWidth = 2; pctx.beginPath();
   let pen = false;
-  for (const r of trace) {
-    if (now - r.t > WINDOW_MS) continue;
-    if (r.d == null || !r.tracked) { pen = false; continue; }
+  for (let i = Math.max(0, trace.length - 3000); i < trace.length; i++) {
+    const r = trace[i]; if (now - r.t > WIN) continue;
+    if (!r.tr || r.d == null) { pen = false; continue; }
     const x = X(r.t), y = Math.max(0, Math.min(H, Y(r.d)));
     if (!pen) { pctx.moveTo(x, y); pen = true; } else pctx.lineTo(x, y);
   }
   pctx.stroke();
-  pctx.fillStyle = "#8a8a93"; pctx.font = "20px sans-serif";
-  pctx.fillText("d = 0 standing; up = higher, down = lower. Orange line = threshold. Red = lost", 8, 22);
 }
 
-document.addEventListener("visibilitychange", async () => {
-  if (document.visibilityState === "visible" && running) {
-    try { wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
-  }
+$("btnCsv").onclick = () => {
+  const rows = ["t_ms,d,tracked"].concat(trace.map(r => `${r.t.toFixed(0)},${r.d == null ? "" : r.d.toFixed(3)},${r.tr ? 1 : 0}`));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" }));
+  a.download = "rakaat-trace.csv"; document.body.appendChild(a); a.click(); a.remove();
+};
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && mode === "run") requestWake();
 });
 </script>
 </body>
