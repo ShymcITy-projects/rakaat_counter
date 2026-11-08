@@ -43,9 +43,9 @@
 
   body.debug[data-mode="run"] #run { bottom:auto; height:45vh; }
   body.debug[data-mode="run"] #num { font-size:34vh; }
-  #dbg { display:none; position:fixed; left:0; right:0; bottom:0; height:55vh; z-index:11;
+  #debugPanel { display:none; position:fixed; left:0; right:0; bottom:0; height:55vh; z-index:11;
          background:#0b0b0d; padding:8px 10px env(safe-area-inset-bottom); overflow:auto; }
-  body.debug[data-mode="run"] #dbg { display:block; }
+  body.debug[data-mode="run"] #debugPanel { display:block; }
   canvas#plot { width:100%; height:110px; background:#111116; border-radius:8px; display:block; }
   #log { font:11px ui-monospace, Menlo, monospace; color:#b9b9c2; white-space:pre-wrap; margin-top:6px; }
   label.dbgtoggle { color:var(--dim); font-size:14px; display:flex; gap:8px; align-items:center; margin-top:18px; }
@@ -82,7 +82,7 @@
 
 <!-- 3. run -->
 <div id="run"><div id="num">1</div><div id="dot"></div></div>
-<div id="dbg">
+<div id="debugPanel">
   <canvas id="plot" width="800" height="220"></canvas>
   <button id="btnCsv" style="padding:8px 12px;font-size:13px;margin-top:6px">Save trace (CSV)</button>
   <div id="log"></div>
@@ -123,7 +123,7 @@ function setMode(m) { mode = m; document.body.dataset.mode = m; }
 function log(msg) {
   if (!debug) return;
   const el = $("log"); const t = (performance.now() / 1000).toFixed(1);
-  el.textContent += `${t}s ${msg}\n`; $("dbg").scrollTop = $("dbg").scrollHeight;
+  el.textContent += `${t}s ${msg}\n`; $("debugPanel").scrollTop = $("debugPanel").scrollHeight;
 }
 function median(a) { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; }
 
