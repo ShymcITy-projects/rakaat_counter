@@ -39,16 +39,23 @@
        opacity:0.01; pointer-events:none; z-index:-1; }
 
   #run { position:fixed; inset:0; background:#000; z-index:10; display:none;
-         align-items:center; justify-content:center; user-select:none; -webkit-user-select:none;
+         flex-direction:column; align-items:center; justify-content:center; gap:2vh;
+         user-select:none; -webkit-user-select:none;
          -webkit-touch-callout:none; touch-action:manipulation; }
   body[data-mode="run"] #run { display:flex; }
-  #num { font-size:min(72vh, 88vw); font-weight:200; line-height:1; color:#9a9aa5; }
+  #pname { font-size:min(7vh, 9vw); font-weight:500; letter-spacing:0.18em; color:#6e6e78; }
+  #num { font-size:min(58vh, 85vw); font-weight:200; line-height:1; color:#9a9aa5; }
+  #btnEnd { position:absolute; left:50%; transform:translateX(-50%);
+            bottom:calc(env(safe-area-inset-bottom) + 18px);
+            background:transparent; color:#6e6e78; border:1px solid #2a2a30;
+            padding:12px 34px; font-size:16px; font-weight:500; }
   #dot { position:fixed; top:calc(env(safe-area-inset-top) + 10px); right:10px; width:7px; height:7px;
          border-radius:50%; background:#1f3d27; }
   #dot.lost { background:#4a1f1f; }
 
   body.debug[data-mode="run"] #run { bottom:auto; height:45vh; }
-  body.debug[data-mode="run"] #num { font-size:34vh; }
+  body.debug[data-mode="run"] #num { font-size:24vh; }
+  body.debug[data-mode="run"] #pname { font-size:4vh; }
   #debugPanel { display:none; position:fixed; left:0; right:0; bottom:0; height:55vh; z-index:11;
          background:#0b0b0d; padding:8px 10px env(safe-area-inset-bottom); overflow:auto; }
   body.debug[data-mode="run"] #debugPanel { display:block; }
@@ -69,15 +76,14 @@
 <div id="setup" class="screen">
   <h1>Намазды таңдаңыз</h1>
   <div id="prayers">
-    <button data-n="2">БАМДАТ<small>2</small></button>
-    <button data-n="3">АҚШАМ<small>3</small></button>
-    <button data-n="4">БЕСІН<small>4</small></button>
-    <button data-n="4">ЕКІНТІ<small>4</small></button>
-    <button data-n="4">ҚҰПТАН<small>4</small></button>
+    <button data-n="2" data-name="БАМДАТ">БАМДАТ<small>2</small></button>
+    <button data-n="3" data-name="АҚШАМ">АҚШАМ<small>3</small></button>
+    <button data-n="4" data-name="БЕСІН">БЕСІН<small>4</small></button>
+    <button data-n="4" data-name="ЕКІНТІ">ЕКІНТІ<small>4</small></button>
+    <button data-n="4" data-name="ҚҰПТАН">ҚҰПТАН<small>4</small></button>
   </div>
   <div class="msg" id="setupMsg"></div>
   <div class="msg small" id="offlineMsg"></div>
-  <div class="msg small">Басынан бастау үшін намаз кезінде санды ұзақ басып тұрыңыз.</div>
   <label class="dbgtoggle"><input type="checkbox" id="dbgChk"> жөндеу көрінісі</label>
 </div>
 
@@ -89,7 +95,7 @@
 </div>
 
 <!-- 3. run -->
-<div id="run"><div id="num">1</div><div id="dot"></div></div>
+<div id="run"><div id="pname"></div><div id="num">1</div><div id="dot"></div><button id="btnEnd">Аяқтау</button></div>
 <div id="debugPanel">
   <canvas id="plot" width="800" height="220"></canvas>
   <button id="btnCsv" style="padding:8px 12px;font-size:13px;margin-top:6px">CSV сақтау</button>
@@ -115,13 +121,12 @@ const CFG = {
   standMed: 0.5,     // median d below this = standing
   standHoldS: 1.5,   // must stay standing this long
   histS: 0.6,        // window for the median
-  minGapS: 3,        // minimum time between two increments
-  finishS: 300       // after the last rakaat is reached, go back to the menu after this long
+  minGapS: 3         // minimum time between two increments
 };
 
 let mode = "setup";
 let landmarker = null, stream = null, loopStarted = false, wakeLock = null, debug = false;
-let target = 4, rak = 1;
+let target = 4, rak = 1, prayerName = "";
 let cal = null, calibrating = false, calSamples = [];
 let dSmooth = null;
 
@@ -189,7 +194,7 @@ async function loadModel() {
 // ---------- setup: choose prayer ----------
 document.querySelectorAll("#prayers button").forEach(b => {
   b.onclick = async () => {
-    target = +b.dataset.n;
+    target = +b.dataset.n; prayerName = b.dataset.name;
     $("setupMsg").textContent = "";
     setMode("prep");
     $("btnBegin").style.display = "none";
@@ -249,6 +254,7 @@ function finishCalibration() {
   rak = 1; dSmooth = null; deep = false; deepSince = null; lastD = 0; lostSince = null; hist = [];
   evSinceInc = 0; standSince = null; lastInc = performance.now() / 1000; trace.length = 0;
   $("num").textContent = rak;
+  $("pname").textContent = prayerName;
   $("log").textContent = "";
   setMode("run");
   log(`calibrated y0=${cal.y0.toFixed(3)} sw=${cal.sw.toFixed(3)}, target=${target}`);
@@ -259,15 +265,8 @@ function requestWake() {
   try { navigator.wakeLock.request("screen").then(l => wakeLock = l); } catch (e) {}
 }
 
-// ---------- long-press the number to start over ----------
-let pressTimer = null;
-$("run").addEventListener("pointerdown", () => {
-  pressTimer = setTimeout(() => { setMode("setup"); $("count").textContent = ""; $("setupMsg").textContent = ""; }, 1500);
-});
-["pointerup", "pointerleave", "pointercancel"].forEach(ev =>
-  $("run").addEventListener(ev, () => clearTimeout(pressTimer)));
-
-// ---------- prayer finished: back to the menu, camera off ----------
+// ---------- "Аяқтау" button: prayer finished, back to the menu, camera off ----------
+$("btnEnd").onclick = () => finishPrayer();
 function finishPrayer() {
   log("prayer finished");
   stopCamera();
@@ -362,8 +361,6 @@ function step(ts, tr, d) {
 
   if (debug) drawPlot(ts * 1000);
 
-  // 3) last rakaat reached and enough time has passed: prayer is over
-  if (rak >= target && ts - lastInc > CFG.finishS) finishPrayer();
 }
 
 function drawPlot(now) {
