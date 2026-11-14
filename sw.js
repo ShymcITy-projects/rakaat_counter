@@ -1,5 +1,5 @@
 const PREFIX = 'rakaat-' + encodeURIComponent(new URL('./', self.location.href).pathname) + '-';
-const SHELL = PREFIX + 'shell-v3.0.0';
+const SHELL = PREFIX + 'shell-v3.0.1';
 const ASSETS = PREFIX + 'assets-mp-0.10.14';
 const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';

@@ -52,10 +52,7 @@
   #dot { position:fixed; top:calc(env(safe-area-inset-top) + 10px); right:10px; width:7px; height:7px;
          border-radius:50%; background:#1f3d27; }
   #dot.lost { background:#ef4444; }
-  #corrections { display:flex; gap:42px; }
-  #corrections button { padding:8px 18px; font-size:22px; color:#8a8a93; }
   #version { position:absolute; left:10px; top:calc(env(safe-area-inset-top) + 8px); color:#555; font-size:11px; }
-  body.debug[data-mode="run"] #corrections { position:absolute; right:10px; bottom:10px; gap:8px; }
   body.debug[data-mode="run"] #btnEnd { bottom:10px; }
 
 
@@ -90,7 +87,7 @@
   </div>
   <div class="msg" id="setupMsg"></div>
   <div class="msg small" id="offlineMsg"></div>
-  <div class="msg small">v3.0.0 · Телефон қозғалмай тұруы керек. Санақ келесі ракаатқа тұрған кезде өзгереді.</div>
+  <div class="msg small">v3.0.1 · Телефон қозғалмай тұруы керек. Санақ келесі ракаатқа тұрған кезде өзгереді.</div>
   <button id="lastCsv" hidden>Соңғы тесті CSV сақтау</button>
   <label class="dbgtoggle"><input type="checkbox" id="dbgChk"> жөндеу көрінісі</label>
 </div>
@@ -104,8 +101,7 @@
 
 <!-- 3. run -->
 <div id="run"><div id="pname"></div><div id="num">1</div><div id="dot" role="status" aria-label="Камера күйі"></div>
-<div id="corrections"><button id="btnMinus" aria-label="Бір ракаат кеміту">−</button><button id="btnPlus" aria-label="Бір ракаат қосу">+</button></div>
-<span id="version">v3.0.0</span><button id="btnEnd">Аяқтау</button></div>
+<span id="version">v3.0.1</span><button id="btnEnd">Аяқтау</button></div>
 <div id="debugPanel">
   <canvas id="plot" width="800" height="220"></canvas>
   <button id="btnCsv" style="padding:8px 12px;font-size:13px;margin-top:6px">CSV сақтау</button>
@@ -123,7 +119,7 @@ const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 const MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
 import { CFG, RakaatDetector } from './detector.mjs';
-const VERSION = '3.0.0';
+const VERSION = '3.0.1';
 let detector = null;
 let lastPoseAt = null;
 let lastInferenceAt = -Infinity;
@@ -385,20 +381,9 @@ function step(ts, tr, d) {
 
 function recordTrace(ts, tr, d, event) {
   trace.push({t: ts * 1000, d, tr, rak, phase: detector.phase, event});
-  // Keep up to about one hour at 30 fps, including manual corrections.
+  // Keep up to about one hour at 30 fps, of pose observations.
   if (trace.length > 108000) trace.splice(0, 1000);
 }
-for (const [id, delta] of [['btnMinus', -1], ['btnPlus', 1]]) {
-  $(id).onclick = () => {
-    const next = Math.max(1, Math.min(target, rak + delta));
-    if (next === rak) return;
-    rak = next; detector.rak = rak; detector.resetSequence();
-    $("num").textContent = rak;
-    recordTrace(performance.now() / 1000, false, null, 'manual');
-    log(`manual → ${rak}`);
-  };
-}
-
 function drawPlot(now) {
   const W = plot.width, H = plot.height, WIN = 40000;
   const Y = v => H - ((v + 1) / 7) * H, X = t => W - ((now - t) / WIN) * W;
