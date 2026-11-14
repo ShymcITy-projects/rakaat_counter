@@ -51,7 +51,13 @@
             padding:12px 34px; font-size:16px; font-weight:500; }
   #dot { position:fixed; top:calc(env(safe-area-inset-top) + 10px); right:10px; width:7px; height:7px;
          border-radius:50%; background:#1f3d27; }
-  #dot.lost { background:#4a1f1f; }
+  #dot.lost { background:#ef4444; }
+  #corrections { display:flex; gap:42px; }
+  #corrections button { padding:8px 18px; font-size:22px; color:#8a8a93; }
+  #version { position:absolute; left:10px; top:calc(env(safe-area-inset-top) + 8px); color:#555; font-size:11px; }
+  body.debug[data-mode="run"] #corrections { position:absolute; right:10px; bottom:10px; gap:8px; }
+  body.debug[data-mode="run"] #btnEnd { bottom:10px; }
+
 
   body.debug[data-mode="run"] #run { bottom:auto; height:45vh; }
   body.debug[data-mode="run"] #num { font-size:24vh; }
@@ -84,6 +90,8 @@
   </div>
   <div class="msg" id="setupMsg"></div>
   <div class="msg small" id="offlineMsg"></div>
+  <div class="msg small">v3.0.0 · Телефон қозғалмай тұруы керек. Санақ келесі ракаатқа тұрған кезде өзгереді.</div>
+  <button id="lastCsv" hidden>Соңғы тесті CSV сақтау</button>
   <label class="dbgtoggle"><input type="checkbox" id="dbgChk"> жөндеу көрінісі</label>
 </div>
 
@@ -95,7 +103,9 @@
 </div>
 
 <!-- 3. run -->
-<div id="run"><div id="pname"></div><div id="num">1</div><div id="dot"></div><button id="btnEnd">Аяқтау</button></div>
+<div id="run"><div id="pname"></div><div id="num">1</div><div id="dot" role="status" aria-label="Камера күйі"></div>
+<div id="corrections"><button id="btnMinus" aria-label="Бір ракаат кеміту">−</button><button id="btnPlus" aria-label="Бір ракаат қосу">+</button></div>
+<span id="version">v3.0.0</span><button id="btnEnd">Аяқтау</button></div>
 <div id="debugPanel">
   <canvas id="plot" width="800" height="220"></canvas>
   <button id="btnCsv" style="padding:8px 12px;font-size:13px;margin-top:6px">CSV сақтау</button>
@@ -107,22 +117,17 @@ const $ = id => document.getElementById(id);
 const video = $("video"), overlay = $("overlay"), octx = overlay.getContext("2d");
 const plot = $("plot"), pctx = plot.getContext("2d");
 
-const CACHE = "rakaat-v2";   // must match sw.js
+const CACHE_PREFIX = "rakaat-" + encodeURIComponent(new URL('./', location.href).pathname) + "-";
+const ASSET_CACHE = CACHE_PREFIX + "assets-mp-0.10.14";
 const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 const MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
-// Detector settings (tuned on real prayers)
-const CFG = {
-  enter: 1.9,        // d above this = deep dip (sujood)
-  exit: 1.75,        // d below this (while tracked) = dip ended
-  lostTrig: 1.6,     // tracking lost right after d above this = still deep
-  minDeepS: 0.3,     // dip must last this long
-  lostGiveUpS: 8,    // lost this long = person probably left; stop assuming "deep"
-  standMed: 0.5,     // median d below this = standing
-  standHoldS: 1.5,   // must stay standing this long
-  histS: 0.6,        // window for the median
-  minGapS: 3         // minimum time between two increments
-};
+import { CFG, RakaatDetector } from './detector.mjs';
+const VERSION = '3.0.0';
+let detector = null;
+let lastPoseAt = null;
+let lastInferenceAt = -Infinity;
+let preparing = false;
 
 let mode = "setup";
 let landmarker = null, stream = null, loopStarted = false, wakeLock = null, debug = false;
@@ -130,9 +135,7 @@ let target = 4, rak = 1, prayerName = "";
 let cal = null, calibrating = false, calSamples = [];
 let dSmooth = null;
 
-// detector state
-let deep = false, deepSince = null, lastD = 0, lostSince = null, hist = [];
-let evSinceInc = 0, standSince = null, lastInc = -1e9;
+// The detector is shared with the CSV replay tests.
 const trace = [];
 
 function setMode(m) { mode = m; document.body.dataset.mode = m; }
@@ -148,15 +151,19 @@ $("dbgChk").onchange = e => { debug = e.target.checked; document.body.classList.
 // ---------- offline support ----------
 async function updateOffline() {
   try {
-    const keys = (await (await caches.open(CACHE)).keys()).map(r => r.url);
+    const keys = (await (await caches.open(ASSET_CACHE)).keys()).map(r => r.url);
     const ok = keys.some(u => u.includes("pose_landmarker_lite.task"))
             && keys.some(u => u.includes("vision_bundle.mjs"))
-            && keys.some(u => u.endsWith(".wasm"));
+            && keys.some(u => u.endsWith("/vision_wasm_internal.wasm"))
+            && keys.some(u => u.endsWith("/vision_wasm_internal.js"))
+            && keys.some(u => u.endsWith("/vision_wasm_nosimd_internal.wasm"))
+            && keys.some(u => u.endsWith("/vision_wasm_nosimd_internal.js"))
+            && !!(await navigator.serviceWorker?.getRegistration())?.active;
     $("offlineMsg").textContent = ok ? "Офлайн жұмысқа дайын ✓" : "Алғаш рет интернет қажет: модель жүктеліп, сақталады.";
   } catch (e) { /* ignore */ }
 }
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js").catch(() => {});
+  navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then(r => r.update()).catch(() => {});
   navigator.serviceWorker.ready.then(() => setTimeout(updateOffline, 1500));
 }
 updateOffline();
@@ -185,15 +192,22 @@ async function loadModel() {
   }
   const { PoseLandmarker, FilesetResolver } = await import(MP + "/vision_bundle.mjs");
   const fileset = await FilesetResolver.forVisionTasks(MP + "/wasm");
-  landmarker = await PoseLandmarker.createFromOptions(fileset, {
+  const options = {
     baseOptions: { modelAssetPath: MODEL, delegate: "GPU" },
     runningMode: "VIDEO", numPoses: 1,
-    minPoseDetectionConfidence: 0.4, minPosePresenceConfidence: 0.4, minTrackingConfidence: 0.4 });
+    minPoseDetectionConfidence: 0.4, minPosePresenceConfidence: 0.4, minTrackingConfidence: 0.4 };
+  try { landmarker = await PoseLandmarker.createFromOptions(fileset, options); }
+  catch (err) {
+    options.baseOptions.delegate = "CPU";
+    landmarker = await PoseLandmarker.createFromOptions(fileset, options);
+  }
 }
 
 // ---------- setup: choose prayer ----------
 document.querySelectorAll("#prayers button").forEach(b => {
   b.onclick = async () => {
+    if (preparing) return;
+    preparing = true;
     target = +b.dataset.n; prayerName = b.dataset.name;
     $("setupMsg").textContent = "";
     setMode("prep");
@@ -212,8 +226,8 @@ document.querySelectorAll("#prayers button").forEach(b => {
     } catch (err) {
       $("prepMsg").textContent = "Қате: " + err.message;
       $("btnBegin").textContent = "Артқа"; $("btnBegin").style.display = "";
-      $("btnBegin").onclick = () => setMode("setup");
-    }
+      $("btnBegin").onclick = () => { stopCamera(); setMode("setup"); };
+    } finally { preparing = false; }
   };
 });
 
@@ -250,9 +264,22 @@ function finishCalibration() {
     $("btnBegin").onclick = startCountdown;
     return;
   }
-  cal = { y0: median(calSamples.map(s => s.y)), sw: median(calSamples.map(s => s.sw)) };
-  rak = 1; dSmooth = null; deep = false; deepSince = null; lastD = 0; lostSince = null; hist = [];
-  evSinceInc = 0; standSince = null; lastInc = performance.now() / 1000; trace.length = 0;
+  const ys = calSamples.map(s => s.y).sort((a,b) => a-b);
+  const widths = calSamples.map(s => s.sw).sort((a,b) => a-b);
+  const sw = median(widths);
+  const spread = ys[Math.floor(ys.length * .9)] - ys[Math.floor(ys.length * .1)];
+  if (sw < 0.04 || spread > sw * 0.25 || widths[Math.floor(widths.length * .9)] > sw * 1.35) {
+    $("count").textContent = "";
+    $("prepMsg").textContent = "Калибрлеу тұрақсыз. Телефонды бекітіп, басыңыз бен екі иығыңыз көрінетіндей қозғалмай тұрыңыз.";
+    $("btnBegin").textContent = "Қайта көру"; $("btnBegin").style.display = "";
+    $("btnBegin").onclick = startCountdown;
+    return;
+  }
+  cal = { y0: median(ys), sw };
+  rak = 1; dSmooth = null; lastPoseAt = null;
+  detector = new RakaatDetector(target); trace.length = 0;
+  $("lastCsv").hidden = true;
+  $("version").textContent = 'v' + VERSION;
   $("num").textContent = rak;
   $("pname").textContent = prayerName;
   $("log").textContent = "";
@@ -262,7 +289,12 @@ function finishCalibration() {
 }
 
 function requestWake() {
-  try { navigator.wakeLock.request("screen").then(l => wakeLock = l); } catch (e) {}
+  if (document.visibilityState !== "visible" || wakeLock || !navigator.wakeLock) return;
+  navigator.wakeLock.request("screen").then(l => {
+    if (mode !== "run") { l.release().catch(() => {}); return; }
+    wakeLock = l;
+    l.addEventListener("release", () => { if (wakeLock === l) wakeLock = null; });
+  }).catch(() => {});
 }
 
 // ---------- "Аяқтау" button: prayer finished, back to the menu, camera off ----------
@@ -273,6 +305,7 @@ function finishPrayer() {
   try { wakeLock && wakeLock.release(); } catch (e) {}
   wakeLock = null;
   setMode("setup");
+  $("lastCsv").hidden = trace.length === 0;
   $("setupMsg").textContent = "Намаз аяқталды.";
 }
 
@@ -282,16 +315,29 @@ function headPoint(lm) {
   if (V(0) > 0.5) return { y: lm[0].y };
   const ears = [7, 8].filter(i => V(i) > 0.5);
   if (ears.length) return { y: ears.reduce((s, i) => s + lm[i].y, 0) / ears.length };
-  if (V(11) > 0.5 && V(12) > 0.5) return { y: (lm[11].y + lm[12].y) / 2 };
+  // Shoulders are not a head substitute: switching landmarks creates a fake dip.
   return null;
 }
 
 let lastVideoTime = -1;
 function loop() {
-  if (stream && landmarker && video.currentTime !== lastVideoTime) {
+  requestAnimationFrame(loop);
+  if (document.hidden) return;
+  if (mode === "run" && performance.now() - lastInferenceAt > 750) {
+    step(performance.now() / 1000, false, null);
+  }
+  if (stream && landmarker && video.readyState >= 2 && video.currentTime !== lastVideoTime
+      && performance.now() - lastInferenceAt >= 30) {
     lastVideoTime = video.currentTime;
     const now = performance.now();
-    const res = landmarker.detectForVideo(video, now);
+    lastInferenceAt = now;
+    let res;
+    try { res = landmarker.detectForVideo(video, now); }
+    catch (err) {
+      if (mode === "run") step(now / 1000, false, null);
+      $("prepMsg").textContent = "Камераны тексеріңіз: " + err.message;
+      return;
+    }
     octx.clearRect(0, 0, overlay.width, overlay.height);
     let tracked = false, d = null;
     if (res.landmarks && res.landmarks.length) {
@@ -306,61 +352,51 @@ function loop() {
           octx.beginPath(); octx.arc(lm[i].x * overlay.width, lm[i].y * overlay.height, 6, 0, 7); octx.fill();
         }
       }
-      if (hp) {
+      if (hp && Number.isFinite(hp.y)) {
         tracked = true;
-        if (calibrating && sw) calSamples.push({ y: hp.y, sw });
+        if (calibrating && sw > 0.04 && Number.isFinite(sw)) calSamples.push({ y: hp.y, sw });
         if (cal) {
           const raw = (hp.y - cal.y0) / cal.sw;
-          dSmooth = dSmooth == null ? raw : dSmooth * 0.6 + raw * 0.4;
+          const dt = lastPoseAt === null ? Infinity : (now - lastPoseAt) / 1000;
+          const alpha = dt > CFG.frameGapS ? 1 : 1 - Math.exp(-dt / 0.055);
+          dSmooth = dSmooth == null ? raw : dSmooth + alpha * (raw - dSmooth);
+          lastPoseAt = now;
           d = dSmooth;
         }
       }
     }
     if (mode === "run" && cal) step(now / 1000, tracked, d);
   }
-  requestAnimationFrame(loop);
 }
 
 // ---------- the state machine ----------
 function step(ts, tr, d) {
-  if (debug) trace.push({ t: ts * 1000, d, tr });
-  if (tr && d != null) {
-    lastD = d; lostSince = null; hist.push([ts, d]);
-  } else {
-    tr = false;
-    if (lostSince == null) lostSince = ts;
-  }
-  while (hist.length && ts - hist[0][0] > CFG.histS) hist.shift();
+  const previous = detector.phase;
+  const state = detector.step(ts, tr, d);
+  rak = state.rak;
+  $("num").textContent = rak;
   $("dot").classList.toggle("lost", !tr);
-
-  // 1) deep dip (sujood): tracked and low, or lost right after going low
-  const isDeep = tr ? d > (deep ? CFG.exit : CFG.enter)
-                    : (lastD > CFG.lostTrig && ts - lostSince < CFG.lostGiveUpS);
-  if (isDeep) {
-    if (deepSince == null) deepSince = ts;
-    if (!deep && ts - deepSince >= CFG.minDeepS) {
-      deep = true; evSinceInc++;
-      log(`deep dip #${evSinceInc} (d=${lastD.toFixed(2)})`);
-    }
-  } else {
-    deepSince = null;
-    if (deep && tr) { deep = false; log("dip ended"); }
-  }
-
-  // 2) standing again after at least one dip = next rakaat
-  const med = hist.length > 5 ? median(hist.map(h => h[1])) : null;
-  const standing = tr && !deep && med != null && med < CFG.standMed;
-  if (standing && evSinceInc >= 1 && rak < target && ts - lastInc > CFG.minGapS) {
-    if (standSince == null) standSince = ts;
-    if (ts - standSince >= CFG.standHoldS) {
-      rak++; evSinceInc = 0; standSince = null; lastInc = ts;
-      $("num").textContent = rak;
-      log(`RAKAAT -> ${rak}`);
-    }
-  } else standSince = null;
-
+  $("dot").title = tr ? "Камера сізді көреді" : "Камера сізді көрмейді. Санақ күтілуде.";
+  if (state.phase !== previous) log(`${previous} → ${state.phase}`);
+  if (state.incremented) log(`RAKAAT → ${rak}`);
+  recordTrace(ts, tr, d, state.incremented ? 'increment' : '');
   if (debug) drawPlot(ts * 1000);
+}
 
+function recordTrace(ts, tr, d, event) {
+  trace.push({t: ts * 1000, d, tr, rak, phase: detector.phase, event});
+  // Keep up to about one hour at 30 fps, including manual corrections.
+  if (trace.length > 108000) trace.splice(0, 1000);
+}
+for (const [id, delta] of [['btnMinus', -1], ['btnPlus', 1]]) {
+  $(id).onclick = () => {
+    const next = Math.max(1, Math.min(target, rak + delta));
+    if (next === rak) return;
+    rak = next; detector.rak = rak; detector.resetSequence();
+    $("num").textContent = rak;
+    recordTrace(performance.now() / 1000, false, null, 'manual');
+    log(`manual → ${rak}`);
+  };
 }
 
 function drawPlot(now) {
@@ -382,15 +418,25 @@ function drawPlot(now) {
   pctx.stroke();
 }
 
-$("btnCsv").onclick = () => {
-  const rows = ["t_ms,d,tracked"].concat(trace.map(r => `${r.t.toFixed(0)},${r.d == null ? "" : r.d.toFixed(3)},${r.tr ? 1 : 0}`));
+function saveCsv() {
+  const rows = ["t_ms,d,tracked,rakaat,phase,event,version,target,cal_y0,cal_sw"].concat(trace.map(r =>
+    `${r.t.toFixed(0)},${r.d == null ? "" : r.d.toFixed(3)},${r.tr ? 1 : 0},${r.rak},${r.phase},${r.event},${VERSION},${target},${cal.y0.toFixed(4)},${cal.sw.toFixed(4)}`));
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" }));
-  a.download = "rakaat-trace.csv"; document.body.appendChild(a); a.click(); a.remove();
-};
+  const url = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8" }));
+  a.href = url; a.download = "rakaat-trace-v3.csv";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+$("btnCsv").onclick = saveCsv;
+$("lastCsv").onclick = saveCsv;
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && mode === "run") requestWake();
+  if (mode !== "run") return;
+  // A hidden tab provides no pose evidence. Drop the partial sequence on return.
+  if (document.visibilityState === "hidden") {
+    detector.resetSequence(); dSmooth = null; lastPoseAt = null;
+    $("dot").classList.add("lost");
+  } else requestWake();
 });
 </script>
 </body>
